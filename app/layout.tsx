@@ -11,17 +11,17 @@ const metadataBase = process.env.SITE_URL
 
 export const metadata: Metadata = {
   metadataBase,
-  title: "A Branch of Summer | A Bayberry Rubbing",
-  description: "Pick a bayberry and preserve a Jiangnan summer through a virtual rubbing.",
+  title: "Echoes Between Places",
+  description: "A translation of place, culture, and sound through virtual rubbing.",
   openGraph: {
-    title: "A Branch of Summer | A Bayberry Rubbing",
-    description: "Pick a bayberry and preserve a Jiangnan summer through a virtual rubbing.",
+    title: "Echoes Between Places",
+    description: "A translation of place, culture, and sound through virtual rubbing.",
     images: [{ url: "/og.png", width: 1200, height: 630 }],
   },
   twitter: {
     card: "summary_large_image",
-    title: "A Branch of Summer | A Bayberry Rubbing",
-    description: "Pick a bayberry and preserve a Jiangnan summer through a virtual rubbing.",
+    title: "Echoes Between Places",
+    description: "A translation of place, culture, and sound through virtual rubbing.",
     images: ["/og.png"],
   },
 };

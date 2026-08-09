@@ -9,7 +9,7 @@ HOST_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/n
 cd "$GAME_DIR" || exit 1
 
 clear
-echo "Starting A Branch of Summer..."
+echo "Starting Echoes Between Places..."
 echo "Please keep this window open while previewing the game."
 echo
 

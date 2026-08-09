@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-type Stage = "panorama" | "garden" | "rubbing" | "memory";
+type Stage = "cover" | "panorama" | "garden" | "rubbing" | "memory";
 type Journey = "bayberry" | "path" | "tree" | "fish" | "wall" | "bridge";
 
 const dialogues = [
@@ -48,13 +48,15 @@ const bridgeDialogues = [
 ];
 
 export default function Home() {
-  const [stage, setStage] = useState<Stage>("panorama");
+  const [stage, setStage] = useState<Stage>("cover");
+  const [coverOpening, setCoverOpening] = useState(false);
   const [journey, setJourney] = useState<Journey>("bayberry");
   const [entering, setEntering] = useState(false);
   const [picked, setPicked] = useState(0);
   const [progress, setProgress] = useState(0);
   const [dialogue, setDialogue] = useState(0);
   const [soundOn, setSoundOn] = useState(false);
+  const [audioFinished, setAudioFinished] = useState(false);
   const [backgroundOn, setBackgroundOn] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -64,6 +66,12 @@ export default function Home() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const backgroundRef = useRef<HTMLAudioElement | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const waveformSamplesRef = useRef<Float32Array | null>(null);
+  const waveformLoadRef = useRef(0);
+  const waveformRef = useRef<HTMLCanvasElement>(null);
+  const waveformFrameRef = useRef<number | null>(null);
+  const backgroundFadeRef = useRef<number | null>(null);
+  const soundTransitionRef = useRef(0);
   const timerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -74,9 +82,6 @@ export default function Home() {
     backgroundRef.current = background;
     background.addEventListener("play", () => setBackgroundOn(true));
     background.addEventListener("pause", () => setBackgroundOn(false));
-    void background.play().catch(() => {
-      // Mobile browsers resume it on the player's first interaction.
-    });
     return () => background.pause();
   }, []);
 
@@ -88,15 +93,20 @@ export default function Home() {
     audio.preload = "auto";
     audio.addEventListener("ended", () => {
       setSoundOn(false);
+      setAudioFinished(true);
       resumeBackground();
     });
     audioRef.current = audio;
+    waveformSamplesRef.current = null;
+    waveformLoadRef.current += 1;
+    setAudioFinished(false);
     image.onload = () => {
       imageRef.current = image;
       prepareCanvas();
     };
     return () => {
       if (timerRef.current) window.clearInterval(timerRef.current);
+      if (waveformFrameRef.current) cancelAnimationFrame(waveformFrameRef.current);
       audio.pause();
     };
   }, [journey]);
@@ -115,7 +125,7 @@ export default function Home() {
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.scale(dpr, dpr);
-    ctx.fillStyle = "#f1e9d7";
+    ctx.fillStyle = "#fff";
     ctx.fillRect(0, 0, box.width, box.height);
     ctx.globalAlpha = 0.1;
     for (let i = 0; i < 80; i++) {
@@ -213,6 +223,7 @@ export default function Home() {
 
   function beginMemory() {
     setStage("memory");
+    setAudioFinished(false);
     playSoundscape();
     timerRef.current = window.setInterval(() => {
       const lines = journey === "path" ? pathDialogues : journey === "tree" ? treeDialogues : journey === "fish" ? fishDialogues : journey === "wall" ? wallDialogues : journey === "bridge" ? bridgeDialogues : dialogues;
@@ -223,26 +234,164 @@ export default function Home() {
   function playSoundscape() {
     const audio = audioRef.current;
     if (!audio) return;
-    backgroundRef.current?.pause();
+    fadeBackgroundAndPlay(audio);
+  }
+
+  function fadeBackgroundAndPlay(audio: HTMLAudioElement) {
+    const background = backgroundRef.current;
+    if (backgroundFadeRef.current) cancelAnimationFrame(backgroundFadeRef.current);
+    const transition = ++soundTransitionRef.current;
+    const startVolume = background?.volume ?? 0;
+    const startedAt = performance.now();
+    const duration = 850;
+    connectWaveform(audio);
     audio.currentTime = 0;
-    setSoundOn(true);
-    void audio.play().catch(() => {
+    audio.volume = 0;
+    setAudioFinished(false);
+    const revealAudio = () => {
+      if (transition !== soundTransitionRef.current) return;
+      if (background) {
+        background.pause();
+        background.volume = 0.3;
+      }
+      audio.currentTime = 0;
+      audio.volume = 1;
+      setSoundOn(true);
+    };
+    void audio.play().then(() => {
+      if (transition !== soundTransitionRef.current) return;
+      if (!background || background.paused) {
+        revealAudio();
+        return;
+      }
+      const fade = (now: number) => {
+        if (transition !== soundTransitionRef.current) return;
+        const amount = Math.min(1, (now - startedAt) / duration);
+        background.volume = startVolume * (1 - amount);
+        if (amount < 1) backgroundFadeRef.current = requestAnimationFrame(fade);
+        else revealAudio();
+      };
+      backgroundFadeRef.current = requestAnimationFrame(fade);
+    }).catch(() => {
+      audio.volume = 1;
       setSoundOn(false);
+      setAudioFinished(true);
       resumeBackground();
     });
+  }
+
+  function connectWaveform(audio: HTMLAudioElement) {
+    const AudioContextConstructor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    drawWaveform();
+    if (!AudioContextConstructor) return;
+    const context = audioContextRef.current || new AudioContextConstructor();
+    audioContextRef.current = context;
+    const load = ++waveformLoadRef.current;
+    void fetch(audio.src)
+      .then((response) => response.arrayBuffer())
+      .then((buffer) => context.decodeAudioData(buffer))
+      .then((decoded) => {
+        if (load !== waveformLoadRef.current) return;
+        const channel = decoded.getChannelData(0);
+        const columns = 720;
+        const block = Math.max(1, Math.floor(channel.length / columns));
+        const samples = new Float32Array(columns);
+        for (let column = 0; column < columns; column++) {
+          let peak = 0;
+          const start = column * block;
+          const end = Math.min(channel.length, start + block);
+          for (let index = start; index < end; index++) peak = Math.max(peak, Math.abs(channel[index]));
+          samples[column] = peak;
+        }
+        waveformSamplesRef.current = samples;
+      })
+      .catch(() => {
+        waveformSamplesRef.current = null;
+      });
+  }
+
+  function drawWaveform() {
+    if (waveformFrameRef.current) cancelAnimationFrame(waveformFrameRef.current);
+    const render = () => {
+      const canvas = waveformRef.current;
+      const audio = audioRef.current;
+      if (canvas && audio) {
+        const rect = canvas.getBoundingClientRect();
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const width = Math.max(1, Math.round(rect.width * dpr));
+        const height = Math.max(1, Math.round(rect.height * dpr));
+        if (canvas.width !== width || canvas.height !== height) {
+          canvas.width = width;
+          canvas.height = height;
+        }
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.clearRect(0, 0, width, height);
+          const middle = height / 2;
+          const samples = waveformSamplesRef.current;
+          const count = samples?.length ?? 360;
+          const progress = Number.isFinite(audio.duration) && audio.duration > 0 ? audio.currentTime / audio.duration : 0;
+          for (let i = 0; i < count; i++) {
+            const x = (i / Math.max(1, count - 1)) * width;
+            const fallback = .12 + Math.abs(Math.sin(i * .41) * Math.cos(i * .087)) * .58;
+            const amplitude = Math.max(.025, samples?.[i] ?? fallback);
+            const bar = Math.min(height * .47, amplitude * height * .72);
+            ctx.strokeStyle = i / count <= progress ? "rgba(23,37,31,.96)" : "rgba(23,37,31,.24)";
+            ctx.lineWidth = Math.max(1, dpr * .72);
+            ctx.beginPath();
+            ctx.moveTo(x, middle - bar);
+            ctx.lineTo(x, middle + bar);
+            ctx.stroke();
+          }
+          const playhead = Math.max(0, Math.min(width, progress * width));
+          ctx.fillStyle = "rgba(23,37,31,.78)";
+          ctx.fillRect(playhead, 0, Math.max(1, dpr), height);
+        }
+      }
+      waveformFrameRef.current = requestAnimationFrame(render);
+    };
+    waveformFrameRef.current = requestAnimationFrame(render);
   }
 
   function ensureBackground() {
     const background = backgroundRef.current;
     const texture = audioRef.current;
     if (!background || (texture && !texture.paused)) return;
+    background.volume = 0.3;
     void background.play().catch(() => undefined);
+  }
+
+  function restoreBackgroundImmediately() {
+    const background = backgroundRef.current;
+    if (!background) return;
+    soundTransitionRef.current += 1;
+    if (backgroundFadeRef.current) cancelAnimationFrame(backgroundFadeRef.current);
+    background.volume = 0.3;
+    void background.play().catch(() => undefined);
+    window.setTimeout(() => {
+      const texture = audioRef.current;
+      if (background.paused && (!texture || texture.paused)) {
+        background.volume = 0.3;
+        void background.play().catch(() => undefined);
+      }
+    }, 180);
   }
 
   function resumeBackground() {
     const background = backgroundRef.current;
     if (!background) return;
+    const transition = ++soundTransitionRef.current;
+    if (backgroundFadeRef.current) cancelAnimationFrame(backgroundFadeRef.current);
+    background.volume = 0;
+    const startedAt = performance.now();
     void background.play().catch(() => undefined);
+    const rise = (now: number) => {
+      if (transition !== soundTransitionRef.current) return;
+      const amount = Math.min(1, (now - startedAt) / 900);
+      background.volume = 0.3 * amount;
+      if (amount < 1) backgroundFadeRef.current = requestAnimationFrame(rise);
+    };
+    backgroundFadeRef.current = requestAnimationFrame(rise);
   }
 
   function playClickSound() {
@@ -283,28 +432,41 @@ export default function Home() {
   }
 
   function reset() {
+    soundTransitionRef.current += 1;
+    if (backgroundFadeRef.current) cancelAnimationFrame(backgroundFadeRef.current);
     if (timerRef.current) window.clearInterval(timerRef.current);
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.currentTime = 0;
     }
     setSoundOn(false);
+    setAudioFinished(false);
     setDialogue(0);
     setProgress(0);
     points.current = 0;
     rubbingTrail.current = [];
     setPicked(0);
     setStage("panorama");
-    resumeBackground();
+    restoreBackgroundImmediately();
     requestAnimationFrame(prepareCanvas);
   }
 
+  function startGame() {
+    if (coverOpening) return;
+    ensureBackground();
+    setCoverOpening(true);
+    window.setTimeout(() => {
+      setStage("panorama");
+      setCoverOpening(false);
+    }, 1050);
+  }
+
   return (
-    <main className={`experience stage-${stage}${entering ? " is-entering" : ""}`} onPointerDown={ensureBackground}>
-      {stage !== "panorama" && <header className="topbar">
+    <main className={`experience stage-${stage}${entering ? " is-entering" : ""}${coverOpening ? " is-cover-opening" : ""}`} onPointerDown={stage === "cover" ? undefined : ensureBackground}>
+      {stage !== "cover" && stage !== "panorama" && <header className="topbar">
         <button className="brand" onClick={reset} aria-label="Start again">
           <span className="seal">{journey === "path" ? "P" : journey === "tree" ? "T" : journey === "fish" ? "F" : journey === "wall" ? "H" : journey === "bridge" ? "M" : "B"}</span>
-          <span><b>{journey === "path" ? "A PATH THROUGH SUMMER" : journey === "tree" ? "THE WOOD REMEMBERS" : journey === "fish" ? "BENEATH THE STILL WATER" : journey === "wall" ? "THE HOUSE HOLDS WARMTH" : journey === "bridge" ? "ACROSS THE MOON BRIDGE" : "A BRANCH OF SUMMER"}</b><small>{journey === "path" ? "A ROAD RUBBING" : journey === "tree" ? "A TREE-BARK RUBBING" : journey === "fish" ? "A FISH RUBBING" : journey === "wall" ? "A BRICK-WALL RUBBING" : journey === "bridge" ? "A BRIDGE RUBBING" : "A BAYBERRY RUBBING"}</small></span>
+          <span><b>{journey === "path" ? "A PATH THROUGH SUMMER" : journey === "tree" ? "THE WOOD REMEMBERS" : journey === "fish" ? "BENEATH THE STILL WATER" : journey === "wall" ? "THE HOUSE HOLDS WARMTH" : journey === "bridge" ? "ACROSS THE MOON BRIDGE" : "ECHOES BETWEEN PLACES"}</b><small>{journey === "path" ? "A ROAD RUBBING" : journey === "tree" ? "A TREE-BARK RUBBING" : journey === "fish" ? "A FISH RUBBING" : journey === "wall" ? "A BRICK-WALL RUBBING" : journey === "bridge" ? "A BRIDGE RUBBING" : "A BAYBERRY RUBBING"}</small></span>
         </button>
         <div className="steps" aria-label="Game progress">
           <span className={stage === "garden" ? "active" : ""}>01 {journey === "path" ? "FOLLOW" : journey === "tree" ? "TOUCH" : journey === "fish" ? "FIND" : journey === "wall" ? "APPROACH" : journey === "bridge" ? "CROSS" : "PICK"}</span>
@@ -320,7 +482,14 @@ export default function Home() {
         )}
       </header>}
 
-      {stage === "panorama" && (
+      {stage === "cover" && (
+        <section className="cover" aria-label="Echoes Between Places introduction">
+          <img src="/cover.jpg" alt="Echoes Between Places — a translation of place, culture, and sound" />
+          <button className="start-game" onClick={startGame}>start game</button>
+        </section>
+      )}
+
+      {(stage === "panorama" || stage === "cover") && (
         <section className="panorama" aria-label="A panoramic garden">
           <div className="panorama-frame">
             <img src="/garden-panorama.jpg" alt="A dreamlike garden with a bayberry tree on the right hill" />
@@ -345,7 +514,7 @@ export default function Home() {
           </div>
           <div className="panorama-title">
             <small>A BAYBERRY RUBBING JOURNEY</small>
-            <h1>A Branch of Summer</h1>
+            <h1>Echoes Between Places</h1>
             <p>Find the bayberry tree and step into its memory.</p>
           </div>
           <div className="panorama-hint">CLICK THE BAYBERRY TREE <i>↗</i></div>
@@ -369,24 +538,21 @@ export default function Home() {
       )}
 
       {stage === "rubbing" && (
-        <section className="rubbing">
+        <section className={`rubbing ${journey}-rubbing`}>
+          <img
+            className="rubbing-background"
+            src={journey === "path" ? "/path-scene.jpg" : journey === "tree" ? "/tree-scene.jpg" : journey === "fish" ? "/fish-scene.png" : journey === "wall" ? "/wall-scene.jpg" : journey === "bridge" ? "/bridge-scene.png" : "/bayberry-scene.jpg"}
+            alt=""
+            aria-hidden="true"
+          />
+          <div className="rubbing-chapter">Chapter 1</div>
+          <div className="rubbing-title">Print the translation</div>
           <div className="rubbing-copy">
             <p className="eyebrow">{journey === "path" ? "CHAPTER TWO · PRESS THE ROAD" : journey === "tree" ? "CHAPTER TWO · PRESS THE BARK" : journey === "fish" ? "CHAPTER TWO · PRESS THE CURRENT" : journey === "wall" ? "CHAPTER TWO · PRESS THE BRICKS" : journey === "bridge" ? "CHAPTER TWO · PRESS THE CROSSING" : "CHAPTER TWO · LEAVE AN IMPRESSION"}</p>
             <h2>{journey === "path" ? <>Your hand follows the path.<br />Press its passing into paper.</> : journey === "tree" ? <>Your hand meets the bark.<br />Press its years into paper.</> : journey === "fish" ? <>Your hand follows the water.<br />Press the fish into paper.</> : journey === "wall" ? <>Your hand meets the wall.<br />Press its touch into paper.</> : journey === "bridge" ? <>Your hand crosses the stone.<br />Press its passage into paper.</> : <>Your hand is the inkstone.<br />Press the fragrance into paper.</>}</h2>
             <p>{journey === "path" ? "Press and rub across the paper. Your movement will slowly reveal the scattered marks of the road." : journey === "tree" ? "Press and rub across the paper. Your movement will reveal the exact grain and broken texture of the tree." : journey === "fish" ? "Press and rub across the paper. Your movement will reveal only the dark traces of the fish and current." : journey === "wall" ? "Press and rub across the paper. Your movement will reveal only the dark broken traces of the brick surface." : journey === "bridge" ? "Press and rub across the paper. Your movement will reveal only the dark traces of the bridge and riverbank." : "Press and rub across the paper. Your movement will slowly reveal the textures of the fruit and leaf."}</p>
-            <div className="meter"><span style={{ width: `${progress}%` }} /><em>{progress}%</em></div>
-            <small>{journey === "path" ? (progress < 32 ? "BEGIN WHERE THE ROAD BENDS" : progress < 72 ? "GOOD — FOLLOW THE SCATTERED STONES" : "THE PATH IS CLEAR") : journey === "tree" ? (progress < 32 ? "BEGIN AT THE HEART OF THE TRUNK" : progress < 72 ? "GOOD — FOLLOW THE GRAIN" : "THE BARK IS CLEAR") : journey === "fish" ? (progress < 32 ? "BEGIN ALONG THE FISH'S BACK" : progress < 72 ? "GOOD — FOLLOW THE CURRENT" : "THE FISH IS CLEAR") : journey === "wall" ? (progress < 32 ? "BEGIN AT THE CENTRE OF THE BRICKS" : progress < 72 ? "GOOD — FOLLOW THE MORTAR" : "THE WALL IS CLEAR") : journey === "bridge" ? (progress < 32 ? "BEGIN AT THE CREST OF THE BRIDGE" : progress < 72 ? "GOOD — FOLLOW THE STONE" : "THE CROSSING IS CLEAR") : (progress < 32 ? "BEGIN AT THE HEART OF THE FRUIT" : progress < 72 ? "GOOD — NOW REVEAL THE LEAF" : "THE IMPRESSION IS CLEAR")}</small>
-            <button className={`continue${progress >= 72 ? " ready" : ""}`} disabled={progress < 72} onClick={beginMemory}>
-              <span className="continue-sound" aria-hidden="true">)))</span>
-              <span className="continue-copy">
-                <b>{progress >= 72 ? "PLAY THE SOUND & CONTINUE" : "KEEP RUBBING TO UNLOCK SOUND"}</b>
-                <small>{progress >= 72 ? (journey === "path" ? "Lift the paper and hear the road" : journey === "tree" ? "Lift the paper and hear the woodpecker" : journey === "fish" ? "Lift the paper and hear the water" : journey === "wall" ? "Lift the paper and hear the kitchen" : journey === "bridge" ? "Lift the paper and hear the oar" : "Lift the paper and hear the leaves") : "The sound appears when the impression is clear"}</small>
-              </span>
-              <span className="continue-arrow">→</span>
-            </button>
           </div>
           <div className="paper-wrap">
-            <div className="paper-label">XUAN PAPER · CINNABAR INK</div>
             <canvas
               ref={canvasRef}
               onPointerDown={(e) => { drawing.current = true; e.currentTarget.setPointerCapture(e.pointerId); drawAt(e.clientX, e.clientY); }}
@@ -395,30 +561,45 @@ export default function Home() {
               onPointerCancel={() => { drawing.current = false; }}
               aria-label={journey === "path" ? "Rub the paper to reveal the road impression" : journey === "tree" ? "Rub the paper to reveal the tree-bark impression" : journey === "fish" ? "Rub the paper to reveal the fish impression" : journey === "wall" ? "Rub the paper to reveal the brick-wall impression" : journey === "bridge" ? "Rub the paper to reveal the bridge impression" : "Rub the paper to reveal the bayberry impression"}
             />
-            <div className="rubbing-cursor">PRESS · RUB</div>
+            {progress < 8 && <div className="rubbing-cursor">PRESS · RUB</div>}
+            <div className="paper-progress">
+              <div className="meter"><span style={{ width: `${progress}%` }} /><em>{progress}%</em></div>
+              <small>{journey === "path" ? (progress < 32 ? "BEGIN WHERE THE ROAD BENDS" : progress < 72 ? "GOOD — FOLLOW THE SCATTERED STONES" : "THE PATH IS CLEAR") : journey === "tree" ? (progress < 32 ? "BEGIN AT THE HEART OF THE TRUNK" : progress < 72 ? "GOOD — FOLLOW THE GRAIN" : "THE BARK IS CLEAR") : journey === "fish" ? (progress < 32 ? "BEGIN ALONG THE FISH'S BACK" : progress < 72 ? "GOOD — FOLLOW THE CURRENT" : "THE FISH IS CLEAR") : journey === "wall" ? (progress < 32 ? "BEGIN AT THE CENTRE OF THE BRICKS" : progress < 72 ? "GOOD — FOLLOW THE MORTAR" : "THE WALL IS CLEAR") : journey === "bridge" ? (progress < 32 ? "BEGIN AT THE CREST OF THE BRIDGE" : progress < 72 ? "GOOD — FOLLOW THE STONE" : "THE CROSSING IS CLEAR") : (progress < 32 ? "BEGIN AT THE HEART OF THE FRUIT" : progress < 72 ? "GOOD — NOW REVEAL THE LEAF" : "THE IMPRESSION IS CLEAR")}</small>
+              {progress >= 72 && (
+                <button className="continue ready" onClick={beginMemory}>
+                  <span>Click to hear</span><span aria-hidden="true">→</span>
+                </button>
+              )}
+            </div>
           </div>
         </section>
       )}
 
       {stage === "memory" && (
-        <section className="memory">
-          <div className="ink-layer" />
+        <section className={`memory ${journey}-memory`}>
+          <img
+            className="memory-background"
+            src={journey === "path" ? "/path-scene.jpg" : journey === "tree" ? "/tree-scene.jpg" : journey === "fish" ? "/fish-scene.png" : journey === "wall" ? "/wall-scene.jpg" : journey === "bridge" ? "/bridge-scene.png" : "/bayberry-scene.jpg"}
+            alt=""
+            aria-hidden="true"
+          />
+          <div className="memory-wash" />
+          <div className="memory-chapter">Chapter 2</div>
+          <div className="memory-heading">Hear the translation</div>
           <div
             className={`final-print ${journey === "path" ? "path-print" : journey === "tree" ? "tree-print" : journey === "fish" ? "fish-print" : journey === "wall" ? "wall-print" : journey === "bridge" ? "bridge-print" : ""}`}
             role="img"
             aria-label={journey === "path" ? "The finished road rubbing" : journey === "tree" ? "The finished tree-bark rubbing" : journey === "fish" ? "The finished fish rubbing" : journey === "wall" ? "The finished brick-wall rubbing" : journey === "bridge" ? "The finished bridge rubbing" : "The finished bayberry and leaf rubbing"}
           />
           <div className="memory-copy">
-            <p className="eyebrow">{journey === "path" ? "CHAPTER THREE · HEAR THE ROAD" : journey === "tree" ? "CHAPTER THREE · HEAR THE WOOD" : journey === "fish" ? "CHAPTER THREE · HEAR THE WATER" : journey === "wall" ? "CHAPTER THREE · HEAR THE HOME" : journey === "bridge" ? "CHAPTER THREE · HEAR THE RIVER" : "CHAPTER THREE · HEAR THE SUMMER"}</p>
-            <h2>{journey === "path" ? <>The path remains.<br />The street returns.</> : journey === "tree" ? <>The grain remains.<br />The forest answers.</> : journey === "fish" ? <>The fish remains.<br />The water returns.</> : journey === "wall" ? <>The wall remains.<br />The kitchen returns.</> : journey === "bridge" ? <>The bridge remains.<br />The oar returns.</> : <>The mark remains.<br />The voices return.</>}</h2>
-            <div className="dialogue" key={dialogue}>
-              <span>{(journey === "path" ? pathDialogues : journey === "tree" ? treeDialogues : journey === "fish" ? fishDialogues : journey === "wall" ? wallDialogues : journey === "bridge" ? bridgeDialogues : dialogues)[dialogue][0]}</span>
-              <p>“{(journey === "path" ? pathDialogues : journey === "tree" ? treeDialogues : journey === "fish" ? fishDialogues : journey === "wall" ? wallDialogues : journey === "bridge" ? bridgeDialogues : dialogues)[dialogue][1]}”</p>
-            </div>
-            <div className="audio-line"><i className={soundOn ? "playing" : ""} /><small>{journey === "path" ? "A STREET BEYOND THE WOODS · FIELD RECORDING" : journey === "tree" ? "WOODPECKER IN THE GROVE · FIELD RECORDING" : journey === "fish" ? "WATER FLOWING THROUGH THE POND · FIELD RECORDING" : journey === "wall" ? "COOKING BEHIND THE BRICK WALL · FIELD RECORDING" : journey === "bridge" ? "AN OAR BENEATH THE MOON BRIDGE · FIELD RECORDING" : "BAYBERRIES IN THE HILLS · PENTATONIC SOUNDSCAPE"}</small></div>
-            <button className="again" onClick={reset}>MAKE ANOTHER <span>↺</span></button>
+            <h2>{journey === "path" ? "Road" : journey === "tree" ? "Tree" : journey === "fish" ? "Fish" : journey === "wall" ? "Wall" : journey === "bridge" ? "Bridge" : "Waxberry"}</h2>
+            <p className="memory-location">{journey === "tree" ? "Location: Henan, China." : journey === "path" || journey === "wall" || journey === "bridge" ? "Location: Inner Mongolia, China." : "Location: Zhejiang, China."}</p>
           </div>
-          <div className="closing">{journey === "path" ? "SOME ROADS ARE REMEMBERED BY THE SOUNDS THEY CARRY." : journey === "tree" ? "SOME TREES ARE REMEMBERED BY THE RHYTHMS THEY HOLD." : journey === "fish" ? "SOME WATERS ARE REMEMBERED BY A SINGLE PASSING SHAPE." : journey === "wall" ? "SOME HOMES ARE REMEMBERED BY THE MEALS HEARD THROUGH THEIR WALLS." : journey === "bridge" ? "SOME CROSSINGS ARE REMEMBERED BY THE WATER MOVING BELOW." : "SOME SUMMERS ARE REMEMBERED BY A SINGLE FRUIT."}</div>
+          <div className={`waveform-shell${soundOn ? " playing" : ""}`}>
+            <canvas ref={waveformRef} className="memory-waveform" aria-label="Live waveform of the field recording" />
+            <small>{soundOn ? "PLAYING FIELD RECORDING" : audioFinished ? "FIELD RECORDING COMPLETE" : "PREPARING FIELD RECORDING"}</small>
+          </div>
+          <button className="again" onClick={reset}>Make another <span>↺</span></button>
         </section>
       )}
       <div className="rotate-notice" aria-hidden="true">
