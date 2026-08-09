@@ -7,7 +7,8 @@ body { display:grid; place-items:center; overflow:hidden; }
 button { font:inherit; color:inherit; }
 .experience { width:min(100vw,calc(100svh * 16 / 9)); height:min(100svh,calc(100vw * 9 / 16)); aspect-ratio:16 / 9; position:relative; overflow:hidden; background:#8799bd; container-type:size; }
 .cover { position:absolute; z-index:50; inset:0; overflow:hidden; background:#7690c9; transform:scale(1); transform-origin:74% 35%; opacity:1; filter:blur(0); transition:transform 1.05s cubic-bezier(.58,0,.22,1),opacity .75s ease .25s,filter 1s ease; }
-.cover>img { width:100%; height:100%; display:block; object-fit:cover; object-position:center; }
+.cover>picture,.cover>picture>img { width:100%; height:100%; display:block; }
+.cover>picture>img { object-fit:cover; object-position:center; }
 .start-game { position:absolute; z-index:2; left:50%; top:75%; transform:translate(-50%,-50%); min-width:220px; min-height:72px; padding:10px 24px; border:0; background:transparent; color:transparent; cursor:pointer; font-size:clamp(25px,2.25vw,42px); font-weight:400; line-height:1; text-shadow:0 0 3px rgba(255,255,255,.08); animation:start-game-flash 1.65s ease-in-out infinite; }
 .start-game:focus-visible { outline:1px solid rgba(255,255,255,.92); outline-offset:5px; }
 .stage-cover.is-cover-opening .cover { transform:scale(2.6); opacity:0; filter:blur(5px); pointer-events:none; }

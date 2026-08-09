@@ -484,7 +484,10 @@ export default function Home() {
 
       {stage === "cover" && (
         <section className="cover" aria-label="Echoes Between Places introduction">
-          <img src="/cover.jpg" alt="Echoes Between Places — a translation of place, culture, and sound" />
+          <picture>
+            <source srcSet="/cover-with-text.png" type="image/png" />
+            <img src="/cover.jpg" alt="Echoes Between Places — a translation of place, culture, and sound" />
+          </picture>
           <button className="start-game" onClick={startGame}>start game</button>
         </section>
       )}
@@ -513,11 +516,9 @@ export default function Home() {
             </button>
           </div>
           <div className="panorama-title">
-            <small>A BAYBERRY RUBBING JOURNEY</small>
             <h1>Echoes Between Places</h1>
             <p>Find the bayberry tree and step into its memory.</p>
           </div>
-          <div className="panorama-hint">CLICK THE BAYBERRY TREE <i>↗</i></div>
         </section>
       )}
 
